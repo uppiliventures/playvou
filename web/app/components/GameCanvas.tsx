@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
 
@@ -23,11 +23,13 @@ interface LeaderboardEntry {
 }
 
 export default function GameCanvas() {
-  const { publicKey } = useWallet();
+  const { publicKey, disconnect, connected } = useWallet();
+  const { setVisible } = useWalletModal();
+
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Player Reg State
+  // Player Registration
   const [playerName, setPlayerName] = useState<string>("");
   const [playerEmail, setPlayerEmail] = useState<string>("");
 
@@ -38,12 +40,8 @@ export default function GameCanvas() {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
-  // Dynamic Leaderboard State
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([
-    { name: "Satoshi_N", email: "satoshi@sol.io", score: 14200, logs: 12400, wallet: "7xKX...3b21" },
-    { name: "CyberGamer", email: "cyber@sol.io", score: 11800, logs: 9800, wallet: "4m9A...99xL" },
-    { name: "SolRider", email: "sol@gamehouse.io", score: 9400, logs: 8100, wallet: "9qP2...11aK" },
-  ]);
+  // Clean Rolling Leaderboard State
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
 
   const telemetryRef = useRef<TelemetryPoint[]>([]);
 
@@ -96,10 +94,19 @@ export default function GameCanvas() {
     if (audioRef.current) audioRef.current.pause();
   };
 
+  // Toggle Wallet Connect / Disconnect cleanly
+  const handleWalletClick = () => {
+    if (connected) {
+      disconnect();
+    } else {
+      setVisible(true);
+    }
+  };
+
   const handleStartGame = (e: React.FormEvent) => {
     e.preventDefault();
     if (!playerName || !playerEmail) {
-      return alert("Please enter your Name and Email to join the tournament!");
+      return alert("Please enter your Name and Email to start!");
     }
 
     setScore(0);
@@ -154,7 +161,6 @@ export default function GameCanvas() {
     setGameState("ENDED");
     stopSoundtrack();
 
-    // Get live connected wallet address dynamically
     const currentWallet = publicKey
       ? `${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)}`
       : "Not Connected";
@@ -543,7 +549,7 @@ export default function GameCanvas() {
 
       {/* Main Game Box */}
       <div className="flex flex-col items-center bg-slate-900 rounded-xl p-6 shadow-2xl border border-slate-800 w-full max-w-[650px]">
-        {/* Header with Live Stats + Solana Wallet Button */}
+        {/* Header Bar with Direct Connect/Disconnect Toggle */}
         <div className="w-full flex flex-wrap justify-between items-center mb-6 gap-2 text-sm">
           <div className="flex items-center gap-4">
             <div>STAGE: <span className="text-purple-400 font-bold">{stage}/6</span></div>
@@ -558,24 +564,35 @@ export default function GameCanvas() {
             >
               {isMuted ? "🔇 MUTED" : "🔊 SOUND ON"}
             </button>
-            <WalletMultiButton className="!bg-emerald-600 hover:!bg-emerald-500 !h-8 !px-3 !text-xs !font-mono !rounded" />
+            <button
+              onClick={handleWalletClick}
+              className={`px-3 py-1.5 text-xs font-bold rounded font-mono cursor-pointer transition-all ${
+                connected
+                  ? "bg-rose-900/60 hover:bg-rose-800 text-rose-300 border border-rose-700"
+                  : "bg-emerald-600 hover:bg-emerald-500 text-slate-950 shadow-md"
+              }`}
+            >
+              {connected && publicKey
+                ? `DISCONNECT (${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)})`
+                : "CONNECT WALLET"}
+            </button>
           </div>
         </div>
 
-        {/* Game Canvas Overlay Area */}
+        {/* Game Canvas Screen */}
         <div className="relative w-[600px] h-[400px] bg-black border-2 border-emerald-500/30 rounded-lg flex flex-col items-center justify-center overflow-hidden shadow-[0_0_15px_rgba(16,185,129,0.1)]">
           {gameState === "IDLE" && (
             <form onSubmit={handleStartGame} className="text-center space-y-4 px-6 w-full max-w-sm">
               <div className="space-y-1">
                 <h2 className="text-2xl font-bold font-mono tracking-widest text-emerald-400 drop-shadow-[0_0_8px_rgba(16,185,129,0.3)]">
-                  SOLANA GAMEHOUSE
+                  PLAYVOU TESTBENCH
                 </h2>
                 <p className="text-[11px] font-mono text-slate-400">
-                  PLAYVOU TOURNAMENT TESTBENCH
+                  AI-POWERED TELEMETRY VERIFICATION
                 </p>
               </div>
 
-              {/* Tournament Reg Form */}
+              {/* Form Input */}
               <div className="space-y-2 text-left">
                 <input
                   type="text"
@@ -587,7 +604,7 @@ export default function GameCanvas() {
                 />
                 <input
                   type="email"
-                  placeholder="Email Address (for prize claim)"
+                  placeholder="Email Address"
                   required
                   value={playerEmail}
                   onChange={(e) => setPlayerEmail(e.target.value)}
@@ -653,56 +670,63 @@ export default function GameCanvas() {
         </div>
       </div>
 
-      {/* Compact Scrollable Leaderboard Sidebar */}
+      {/* Clean Rolling Leaderboard Sidebar */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 w-full lg:w-[320px] shadow-2xl font-mono">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
           <h3 className="text-sm font-bold text-emerald-400 tracking-wider flex items-center gap-1.5">
-            🏆 GAMEHOUSE BOARD
+            🏆 LIVE LEADERBOARD
           </h3>
-          <span className="bg-purple-500/10 border border-purple-500/30 text-purple-300 text-[10px] px-2 py-0.5 rounded font-bold uppercase">
-            SUPERTEAM
+          <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[10px] px-2 py-0.5 rounded font-bold uppercase">
+            PLAYTEST
           </span>
         </div>
 
-        {/* Scrollable Container with Custom Scrollbar Styling */}
+        {/* Scrollable Leaderboard Container */}
         <div className="max-h-[290px] overflow-y-auto space-y-2 pr-1 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-900">
-          {leaderboard.map((entry, i) => {
-            const rankColors = [
-              "text-amber-400",
-              "text-slate-300",
-              "text-amber-600",
-              "text-purple-400",
-              "text-cyan-400",
-            ];
+          {leaderboard.length === 0 ? (
+            <div className="text-center py-12 text-slate-500 text-xs font-mono space-y-1">
+              <div>NO PLAYTEST RUNS YET.</div>
+              <div className="text-[10px] text-slate-600">BE THE FIRST ON THE BOARD!</div>
+            </div>
+          ) : (
+            leaderboard.map((entry, i) => {
+              const rankColors = [
+                "text-amber-400",
+                "text-slate-300",
+                "text-amber-600",
+                "text-purple-400",
+                "text-cyan-400",
+              ];
 
-            return (
-              <div
-                key={i}
-                className="flex items-center justify-between p-2.5 bg-slate-950/80 border border-slate-800/80 rounded-lg text-xs"
-              >
-                <div className="flex items-center gap-2.5 truncate max-w-[170px]">
-                  <span className={`font-bold text-xs ${rankColors[i] || "text-slate-500"}`}>
-                    #{i + 1}
-                  </span>
-                  <div className="truncate">
-                    <div className="font-bold text-slate-200 truncate">{entry.name}</div>
-                    <div className="text-[10px] text-slate-500 truncate">{entry.wallet}</div>
+              return (
+                <div
+                  key={i}
+                  className="flex items-center justify-between p-2.5 bg-slate-950/80 border border-slate-800/80 rounded-lg text-xs"
+                >
+                  <div className="flex items-center gap-2.5 truncate max-w-[170px]">
+                    <span className={`font-bold text-xs ${rankColors[i] || "text-slate-500"}`}>
+                      #{i + 1}
+                    </span>
+                    <div className="truncate">
+                      <div className="font-bold text-slate-200 truncate">{entry.name}</div>
+                      <div className="text-[10px] text-slate-500 truncate">{entry.wallet}</div>
+                    </div>
+                  </div>
+
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-cyan-400 font-bold">{entry.score.toLocaleString()}</div>
+                    <div className="text-[9px] text-slate-500">{entry.logs} pts</div>
                   </div>
                 </div>
-
-                <div className="text-right flex-shrink-0">
-                  <div className="text-cyan-400 font-bold">{entry.score.toLocaleString()}</div>
-                  <div className="text-[9px] text-slate-500">{entry.logs} pts</div>
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
 
-        {/* Footer Banner */}
+        {/* Clean Rolling High Scores Footer */}
         <div className="mt-4 pt-3 border-t border-slate-800 text-center space-y-1">
-          <p className="text-[11px] font-bold text-emerald-400 tracking-wide">
-            🎁 POSITIONS 1–5 WIN MYSTERY GIFTS
+          <p className="text-[11px] font-bold text-slate-300 tracking-wide">
+            ⚡ ROLLING HIGH SCORES
           </p>
           <p className="text-[9px] text-slate-500">
             Playtest telemetry verified live on Solana.
