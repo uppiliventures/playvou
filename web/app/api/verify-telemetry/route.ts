@@ -2,10 +2,8 @@ import { NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 import { Ratelimit } from "@upstash/ratelimit";
 
-// Initialize Redis from Environment Variables
 const redis = Redis.fromEnv();
 
-// Configure Rate Limiter: Max 5 submissions per 1 minute per IP address
 const ratelimit = new Ratelimit({
   redis,
   limiter: Ratelimit.slidingWindow(5, "1 m"),
@@ -14,22 +12,19 @@ const ratelimit = new Ratelimit({
 
 export async function POST(req: Request) {
   try {
-    // 1. IP Rate Limiting Guardrail
     const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1";
     const { success: rateLimitPassed } = await ratelimit.limit(ip);
 
     if (!rateLimitPassed) {
       return NextResponse.json(
-        { error: "Too many score submissions. Please slow down." },
+        { error: "Too many submissions. Please slow down." },
         { status: 429 }
       );
     }
 
-    // 2. Parse Payload
     const body = await req.json();
     const { playerName, email, walletAddress, score, isHumanVerified } = body;
 
-    // 3. Anti-Cheat / Telemetry Check
     if (isHumanVerified === false) {
       return NextResponse.json(
         { error: "Anti-cheat telemetry validation failed." },
@@ -37,7 +32,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // 4. Validate Score
     if (score === undefined || score === null || isNaN(Number(score))) {
       return NextResponse.json(
         { error: "Valid numeric score is required." },
@@ -45,7 +39,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Cap unreasonable scores to prevent integer overflow/hacked values
     const numericScore = Number(score);
     if (numericScore < 0 || numericScore > 10000000) {
       return NextResponse.json(
@@ -54,32 +47,63 @@ export async function POST(req: Request) {
       );
     }
 
-    // 5. Determine Player Display Handle
-    const identifier =
+    // 1. Clean base name (e.g., "james" -> "James")
+    const rawInput =
       playerName?.trim() ||
       (email ? email.trim().split("@")[0] : null) ||
       (walletAddress ? `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}` : null) ||
       "Anonymous Pilot";
 
-    // 6. Save Score to Redis Sorted Set
+    const baseName =
+      rawInput.charAt(0).toUpperCase() + rawInput.slice(1);
+
+    // 2. Identify user by unique email or wallet key
+    const userKey = email ? email.trim().toLowerCase() : (walletAddress || ip);
+
+    // 3. Check if this exact user already has a tagged display handle (e.g., "James#1042")
+    let displayHandle = await redis.hget<string>("user_handles", userKey);
+
+    if (!displayHandle) {
+      // Check if the base name "James" is already taken by someone else
+      const nameOwner = await redis.hget<string>("name_claims", baseName.toLowerCase());
+
+      if (!nameOwner) {
+        // Name is free! First James gets "James"
+        displayHandle = baseName;
+        await redis.hset("name_claims", { [baseName.toLowerCase()]: userKey });
+      } else if (nameOwner === userKey) {
+        // It's the original James returning
+        displayHandle = baseName;
+      } else {
+        // Second James! Generate a unique 4-digit tag: "James#4829"
+        const tag = Math.floor(1000 + Math.random() * 9000);
+        displayHandle = `${baseName}#${tag}`;
+      }
+
+      // Lock this assigned handle to this user's email/wallet
+      await redis.hset("user_handles", { [userKey]: displayHandle });
+    }
+
+    // 4. Save/Update Score in Redis
     await redis.zadd("leaderboard", {
       score: numericScore,
-      member: identifier,
+      member: displayHandle,
     });
 
-    // 7. Store Unique Playtester Email Privately
+    // 5. Store email privately for playtest rewards
     if (email && typeof email === "string" && email.includes("@")) {
       await redis.sadd("playtester_emails", email.trim().toLowerCase());
     }
 
     return NextResponse.json({
       success: true,
-      message: "Score verified and saved to Redis!",
+      message: "Score verified and saved!",
+      assignedHandle: displayHandle,
     });
   } catch (error) {
     console.error("Redis POST Error:", error);
     return NextResponse.json(
-      { error: "Failed to persist score to database." },
+      { error: "Failed to persist score." },
       { status: 500 }
     );
   }
