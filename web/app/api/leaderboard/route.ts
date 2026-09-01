@@ -5,7 +5,7 @@ const redis = Redis.fromEnv();
 
 export async function GET() {
   try {
-    // Fetch top 10 high scores from sorted set
+    // Fetch Top 10 High Scores from 'leaderboard' Sorted Set
     const rawData = await redis.zrange("leaderboard", 0, 9, {
       rev: true,
       withScores: true,
