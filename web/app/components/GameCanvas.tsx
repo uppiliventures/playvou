@@ -22,6 +22,10 @@ interface LeaderboardEntry {
   wallet: string;
 }
 
+// Telemetry sampling rate for mousemove events. 30Hz keeps a 6-minute
+// session's array in the low thousands of points while retaining high signal.
+const TELEMETRY_SAMPLE_INTERVAL_MS = 33;
+
 export default function GameCanvas() {
   const { publicKey, disconnect, connected } = useWallet();
   const { setVisible } = useWalletModal();
@@ -44,6 +48,7 @@ export default function GameCanvas() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
 
   const telemetryRef = useRef<TelemetryPoint[]>([]);
+  const lastMoveSampleRef = useRef<number>(0);
 
   // 3-Form Boss State
   const bossRef = useRef({
@@ -78,7 +83,9 @@ export default function GameCanvas() {
       audioRef.current.src = src;
       audioRef.current.currentTime = 0;
       audioRef.current.muted = isMuted;
-      audioRef.current.play().catch((err) => console.log("Audio play blocked:", err));
+      audioRef.current.play().catch(() => {
+        // Autoplay can be blocked by browser until user interaction — non-fatal.
+      });
     }
   };
 
@@ -113,6 +120,7 @@ export default function GameCanvas() {
     setStage(1);
     setTimeLeft(360);
     telemetryRef.current = [];
+    lastMoveSampleRef.current = 0;
     bossRef.current = {
       x: 200,
       y: 40,
@@ -133,48 +141,64 @@ export default function GameCanvas() {
     playStageTrack(1);
   };
 
-  // Timer & Stage Transitions
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (gameState === "PLAYING" && timeLeft > 0) {
-      timer = setInterval(() => {
-        setTimeLeft((prev) => {
-          const nextTime = prev - 1;
-          const elapsedSeconds = 360 - nextTime;
-
-          const calculatedStage = Math.min(Math.floor(elapsedSeconds / 60) + 1, 6);
-          if (calculatedStage !== stage) {
-            setStage(calculatedStage);
-            playStageTrack(calculatedStage);
-          }
-
-          return nextTime;
-        });
-      }, 1000);
-    } else if (timeLeft === 0 && gameState === "PLAYING") {
-      finishSession();
-    }
-    return () => clearInterval(timer);
-  }, [gameState, timeLeft, stage]);
-
+  // State-guarded finishSession to prevent duplicate leaderboard additions
   const finishSession = () => {
-    setGameState("ENDED");
-    stopSoundtrack();
+    setGameState((currentGameState) => {
+      if (currentGameState === "ENDED") return "ENDED";
 
-    const currentWallet = publicKey
-      ? `${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)}`
-      : "Not Connected";
+      stopSoundtrack();
 
-    const newEntry: LeaderboardEntry = {
-      name: playerName || "Anonymous",
-      email: playerEmail || "none@sol.io",
-      score,
-      logs: telemetryRef.current.length,
-      wallet: currentWallet,
-    };
+      const currentWallet = publicKey
+        ? `${publicKey.toBase58().slice(0, 4)}...${publicKey.toBase58().slice(-4)}`
+        : "Not Connected";
 
-    setLeaderboard((prev) => [...prev, newEntry].sort((a, b) => b.score - a.score));
+      setScore((currentScore) => {
+        const newEntry: LeaderboardEntry = {
+          name: playerName || "Anonymous",
+          email: playerEmail || "none@sol.io",
+          score: currentScore,
+          logs: telemetryRef.current.length,
+          wallet: currentWallet,
+        };
+        setLeaderboard((prev) => [...prev, newEntry].sort((a, b) => b.score - a.score));
+        return currentScore;
+      });
+
+      return "ENDED";
+    });
   };
+
+  // Timer & Stage Transitions Effect
+  useEffect(() => {
+    if (gameState !== "PLAYING") return;
+
+    const timer = setInterval(() => {
+      setTimeLeft((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          finishSession();
+          return 0;
+        }
+
+        const nextTime = prev - 1;
+        const elapsedSeconds = 360 - nextTime;
+        const calculatedStage = Math.min(Math.floor(elapsedSeconds / 60) + 1, 6);
+
+        setStage((prevStage) => {
+          if (calculatedStage !== prevStage) {
+            playStageTrack(calculatedStage);
+            return calculatedStage;
+          }
+          return prevStage;
+        });
+
+        return nextTime;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState]);
 
   // Main Canvas Render Engine
   useEffect(() => {
@@ -186,6 +210,9 @@ export default function GameCanvas() {
     if (!ctx) return;
 
     let animationFrameId: number;
+    let waveOffset = 0;
+    let cloakTimer = 0;
+    let wasCloaked = false;
 
     const invaderW = 33;
     const invaderH = 24;
@@ -250,7 +277,12 @@ export default function GameCanvas() {
 
     if (stage < 6) initInvaders();
 
+    // Throttled mousemove telemetry sampling (~30Hz)
     const handleMouseMove = (e: MouseEvent) => {
+      const now = performance.now();
+      if (now - lastMoveSampleRef.current < TELEMETRY_SAMPLE_INTERVAL_MS) return;
+      lastMoveSampleRef.current = now;
+
       const rect = canvas.getBoundingClientRect();
       telemetryRef.current.push({
         x: Math.round(e.clientX - rect.left),
@@ -261,6 +293,7 @@ export default function GameCanvas() {
       });
     };
 
+    // Unthrottled mouse clicks
     const handleMouseClick = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       const clickX = e.clientX - rect.left;
@@ -417,7 +450,7 @@ export default function GameCanvas() {
           if (!seg.alive) return;
           seg.x += 4.2;
           seg.y = 110 + Math.sin(waveOffset + i * 0.4) * 55 + Math.cos(waveOffset * 0.5) * 30;
-          
+
           if (seg.x > canvas.width + 20) {
             seg.x = -20;
             b.centipedeYOffset = (Math.random() - 0.5) * 40;
@@ -454,10 +487,6 @@ export default function GameCanvas() {
         ctx.fillRect(b.x + 30, b.y + 40, 90, 60);
       }
     };
-
-    let waveOffset = 0;
-    let cloakTimer = 0;
-    let wasCloaked = false;
 
     const render = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -528,16 +557,49 @@ export default function GameCanvas() {
     };
   }, [gameState, stage]);
 
+  // Phase 2a: Real API Submission to /api/verify-telemetry
   const handleSubmitTelemetry = async () => {
     if (!publicKey) return alert("Please connect your wallet first!");
     setIsSubmitting(true);
+
     try {
-      await new Promise((res) => setTimeout(res, 1200));
-      alert(
-        `SUCCESS!\nVerified ${telemetryRef.current.length} telemetry points for ${playerName}.\nDeployer paid reward tokens to ${publicKey.toBase58().slice(0, 6)}...!`
-      );
+      const response = await fetch("/api/verify-telemetry", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerName,
+          playerEmail,
+          wallet: publicKey.toBase58(),
+          score,
+          telemetry: telemetryRef.current,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        alert(`Verification Error: ${data.error || "Failed to submit telemetry"}`);
+        return;
+      }
+
+      if (data.verified) {
+        alert(
+          `✅ HUMAN VERIFIED!\n` +
+          `Score: ${data.score}\n` +
+          `Human Likelihood: ${data.humanScore}%\n` +
+          `Telemetry Samples: ${data.telemetryPointCount}\n\n` +
+          `Payout Status: ${data.payout.status}`
+        );
+      } else {
+        alert(
+          `❌ BOT DETECTED / UNVERIFIED\n` +
+          `Human Likelihood: ${data.humanScore}%\n` +
+          `Check breakdown in console.`
+        );
+        console.log("Failed Checks:", data.checks);
+      }
     } catch (err) {
-      alert("Payout failed");
+      alert("Network error submitting telemetry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -549,14 +611,14 @@ export default function GameCanvas() {
 
       {/* Main Game Box */}
       <div className="flex flex-col items-center bg-slate-900 rounded-xl p-6 shadow-2xl border border-slate-800 w-full max-w-[650px]">
-        {/* Header Bar with Direct Connect/Disconnect Toggle */}
+        {/* Header Bar */}
         <div className="w-full flex flex-wrap justify-between items-center mb-6 gap-2 text-sm">
           <div className="flex items-center gap-4">
             <div>STAGE: <span className="text-purple-400 font-bold">{stage}/6</span></div>
             <div>TIME: <span className="text-amber-400 font-bold">{Math.floor(timeLeft / 60)}m {timeLeft % 60}s</span></div>
             <div>SCORE: <span className="text-cyan-400 font-bold">{score}</span></div>
           </div>
-          
+
           <div className="flex items-center gap-2">
             <button
               onClick={toggleMute}
@@ -662,7 +724,7 @@ export default function GameCanvas() {
                   disabled={isSubmitting}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 text-black font-bold font-mono text-sm rounded shadow-md cursor-pointer"
                 >
-                  {isSubmitting ? "CLAIM DEPLOYER PAYOUT..." : "VERIFY & CLAIM PAYOUT"}
+                  {isSubmitting ? "VERIFYING..." : "VERIFY & CLAIM PAYOUT"}
                 </button>
               </div>
             </div>
@@ -723,7 +785,7 @@ export default function GameCanvas() {
           )}
         </div>
 
-        {/* Clean Rolling High Scores Footer */}
+        {/* Rolling High Scores Footer */}
         <div className="mt-4 pt-3 border-t border-slate-800 text-center space-y-1">
           <p className="text-[11px] font-bold text-slate-300 tracking-wide">
             ⚡ ROLLING HIGH SCORES
