@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { Redis } from "@upstash/redis";
 
+// Prevents Next.js/Vercel from caching the leaderboard on page refresh
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 const redis = Redis.fromEnv();
 
 export async function GET() {
